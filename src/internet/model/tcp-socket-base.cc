@@ -22,6 +22,7 @@
 #define NS_LOG_APPEND_CONTEXT \
   if (m_node) { std::clog << Simulator::Now ().GetSeconds () << " [node " << m_node->GetId () << "] "; }
 
+#include <cstdlib>
 #include "ns3/abort.h"
 #include "ns3/node.h"
 #include "ns3/inet-socket-address.h"
@@ -105,7 +106,7 @@ TcpSocketBase::TcpSocketBase (void)
     m_node (0),
     m_tcp (0),
     m_rtt (0),
-    m_nextTxSequence (0),
+    m_nextTxSequence (std::rand ()),
     // Change this for non-zero initial sequence number
     m_highTxMark (0),
     m_rxBuffer (0),

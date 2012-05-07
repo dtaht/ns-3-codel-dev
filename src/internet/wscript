@@ -183,6 +183,7 @@ def build(bld):
         'helper/ipv6-interface-container.cc',
         'helper/ipv6-routing-helper.cc',
         'model/ipv6-address-generator.cc',
+        'model/sfq-queue.cc',
         ]
 
     internet_test = bld.create_ns3_module_test_library('internet')

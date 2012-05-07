@@ -88,7 +88,7 @@ int main (int argc, char *argv[])
   std::string LinkRate ("10Mbps");
   std::string LinkDelay ("2ms");
   //  DropTailQueue::MaxPackets affects the # of dropped packets, default value:100
-  //  Config::SetDefault ("ns3::DropTailQueue::MaxPackets", UintegerValue (1000));
+  Config::SetDefault ("ns3::DropTailQueue::MaxPackets", UintegerValue (42));
 
   srand ( (unsigned)time ( NULL ) );   // generate different seed each time
 
