@@ -29,17 +29,22 @@
 #define CODEL_H
 
 #include <queue>
-#include "ns3/core-module.h"
 #include "ns3/packet.h"
 #include "ns3/queue.h"
 #include "ns3/nstime.h"
-
+#include "ns3/simulator.h"
+#include "ns3/string.h"
+#include "ns3/traced-value.h"
+#include "ns3/trace-source-accessor.h"
 
 namespace ns3 {
 
 typedef uint32_t codel_time_t;
+typedef uint16_t rec_inv_sqrt_t;
 
 #define CODEL_SHIFT 10
+#define REC_INV_SQRT_BITS (8*sizeof(rec_inv_sqrt_t))
+#define REC_INV_SQRT_SHIFT (32 - REC_INV_SQRT_BITS)
 
 class TraceContainer;
 
@@ -85,23 +90,27 @@ public:
    */
   CoDelQueue::Mode  GetMode (void);
 
+  uint32_t GetQueueSize (void);
+
 private:
   virtual bool DoEnqueue (Ptr<Packet> p);
   virtual Ptr<Packet> DoDequeue (void);
   virtual Ptr<const Packet> DoPeek (void) const;
+  void NewtonStep(void);
   codel_time_t ControlLaw(codel_time_t t);
   bool ShouldDrop(Ptr<Packet> p, codel_time_t now);
 
   std::queue<Ptr<Packet> > m_packets;
   uint32_t m_maxPackets;
   uint32_t m_maxBytes;
-  uint32_t m_bytesInQueue;
+  TracedValue<uint32_t> m_bytesInQueue;
   uint32_t m_minbytes;
   Time m_Interval;
   Time m_Target;
-  uint32_t m_count;
-  uint32_t m_drop_count;
+  TracedValue<uint32_t> m_count;
+  TracedValue<uint32_t> m_drop_count;
   bool m_dropping;
+  uint16_t m_rec_inv_sqrt;
   codel_time_t m_first_above_time;
   codel_time_t m_drop_next;
   uint32_t m_state1;

@@ -28,6 +28,7 @@
 #include "ns3/log.h"
 #include "ns3/enum.h"
 #include "ns3/uinteger.h"
+#include "ns3/abort.h"
 #include "codel-queue.h"
 
 NS_LOG_COMPONENT_DEFINE ("CoDelQueue");
@@ -35,35 +36,8 @@ NS_LOG_COMPONENT_DEFINE ("CoDelQueue");
 namespace ns3 {
 
 #define BITS_PER_LONG (8 * sizeof (unsigned long))
+
 /* borrowed from the linux kernel */
-/**
- * int_sqrt - rough approximation to sqrt
- * @x: integer of which to calculate the sqrt
- *
- * A very rough approximation to the sqrt() function.
- */
-static unsigned long int_sqrt(unsigned long x)
-{
-	unsigned long op, res, one;
-
-	op = x;
-	res = 0;
-
-	one = 1UL << (BITS_PER_LONG - 2);
-	while (one > op)
-		one >>= 2;
-
-	while (one != 0) {
-		if (op >= res + one) {
-			op = op - (res + one);
-			res = res +  2 * one;
-		}
-		res /= 2;
-		one /= 4;
-	}
-	return res;
-}
-
 #define do_div(n,base)						\
 ({								\
 	int __res;						\
@@ -71,6 +45,13 @@ static unsigned long int_sqrt(unsigned long x)
 	n = ((unsigned long)n) / (unsigned int)base;		\
 	__res;							\
 })
+
+static inline uint32_t reciprocal_divide(uint32_t A, uint32_t R)
+{
+	return (uint32_t)(((uint64_t)A * R) >> 32);
+}
+
+/* end kernel borrowings */
 
 static codel_time_t codel_get_time(void)
 {
@@ -83,7 +64,7 @@ static codel_time_t codel_get_time(void)
 #define codel_time_after(a, b)	 ((int)(a) - (int)(b) > 0)
 #define codel_time_after_eq(a, b) ((int)(a) - (int)(b) >= 0)
 #define codel_time_before(a, b)	 ((int)(a) - (int)(b) < 0)
-#define codel_time_before_eq(a, b) ((int)(a) - (int)(b) >= 0)
+#define codel_time_before_eq(a, b) ((int)(a) - (int)(b) <= 0)
 
 #define NSEC_PER_MSEC 1000000
 #define NSEC_PER_USEC 1000
@@ -93,29 +74,6 @@ static codel_time_t codel_get_time(void)
 #define TIME2CODEL(a) NS2TIME(a.GetNanoSeconds())
 
 #define DEFAULT_CODEL_LIMIT 1000
-
-/* 
- * return interval/sqrt(x) with good precision
- */
-static uint32_t calc(uint32_t _interval, uint32_t _x)
-{
-	uint64_t interval = _interval;
-	unsigned long x = _x;
-
-	/* scale operands for max precision
-	 * On 64bit arches, we can prescale x by 32bits
-	 */
-	if (BITS_PER_LONG == 64) {
-		x <<= 32;
-		interval <<= 16;
-	}
-	while (x < (1UL << (BITS_PER_LONG - 2))) {
-		x <<= 2;
-		interval <<= 1;
-	}
-	do_div(interval, int_sqrt(x));
-	return (uint32_t)interval;
-}
 
 
 class CoDelTimestampTag : public Tag
@@ -224,6 +182,15 @@ TypeId CoDelQueue::GetTypeId (void)
                    StringValue ("5ms"),
                    MakeTimeAccessor (&CoDelQueue::m_Target),
                    MakeTimeChecker ())
+    .AddTraceSource("count",
+                    "CoDel count",
+                    MakeTraceSourceAccessor(&CoDelQueue::m_count))
+    .AddTraceSource("drop_count",
+                    "CoDel drop count",
+                    MakeTraceSourceAccessor(&CoDelQueue::m_drop_count))
+    .AddTraceSource("bytesInQueue",
+                    "Number of bytes in the queue",
+                    MakeTraceSourceAccessor(&CoDelQueue::m_bytesInQueue))
   ;
 
   return tid;
@@ -237,6 +204,7 @@ CoDelQueue::CoDelQueue () :
   m_count(0),
   m_drop_count(0),
   m_dropping(false),
+  m_rec_inv_sqrt(~0U >> REC_INV_SQRT_SHIFT),
   m_first_above_time(0),
   m_drop_next(0),
   m_state1(0),
@@ -253,10 +221,22 @@ CoDelQueue::~CoDelQueue ()
   NS_LOG_FUNCTION_NOARGS ();
 }
 
+void
+CoDelQueue::NewtonStep(void)
+{
+  uint32_t invsqrt = ((uint32_t) m_rec_inv_sqrt) << REC_INV_SQRT_SHIFT;
+  uint32_t invsqrt2 = ((uint64_t) invsqrt*invsqrt) >> 32;
+  uint64_t val = (3ll<<32) - ((uint64_t) m_count * invsqrt2);
+
+  val >>= 2; /* avoid overflow */
+  val = (val * invsqrt) >> (32-2+1);
+  m_rec_inv_sqrt = val >> REC_INV_SQRT_SHIFT;
+}
+
 codel_time_t 
 CoDelQueue::ControlLaw(codel_time_t t)
 {
-	return t + calc(TIME2CODEL(m_Interval), m_count);
+  return t + reciprocal_divide(TIME2CODEL(m_Interval), m_rec_inv_sqrt << REC_INV_SQRT_SHIFT);
 }
 
 void
@@ -313,7 +293,8 @@ CoDelQueue::ShouldDrop(Ptr<Packet> p, codel_time_t now)
   bool drop;
   found = p->FindFirstMatchingByteTag (tag);
   Time delta = Simulator::Now () - tag.GetTxTime ();
-  codel_time_t sojourn_time = NS2TIME(delta.GetNanoSeconds ());
+  NS_LOG_INFO ("Sojourn time "<<delta.GetSeconds ());
+  codel_time_t sojourn_time = TIME2CODEL(delta);
   
   if (codel_time_before(sojourn_time, TIME2CODEL(m_Target)) || 
       m_bytesInQueue < m_minbytes)
@@ -347,6 +328,7 @@ CoDelQueue::DoDequeue (void)
   if (m_packets.empty ())
     {
       m_dropping = false;
+      m_first_above_time = 0;
       NS_LOG_LOGIC ("Queue empty");
       return 0;
     }
@@ -384,6 +366,14 @@ CoDelQueue::DoDequeue (void)
               Drop(p);
               ++m_drop_count;
               ++m_count;
+              NewtonStep();
+              if (m_packets.empty ())
+                {
+                  m_dropping = false;
+                  NS_LOG_LOGIC ("Queue empty");
+                  ++m_states;
+                  return 0;
+                }
               p = m_packets.front ();
               m_packets.pop ();
               m_bytesInQueue -= p->GetSize ();
@@ -408,12 +398,17 @@ CoDelQueue::DoDequeue (void)
   else 
     if (drop &&
         (codel_time_before(now - m_drop_next,
-                           16 * TIME2CODEL(m_Interval)) ||
+                           TIME2CODEL(m_Interval)) ||
          codel_time_after_eq(now - m_first_above_time,
-                             2 * TIME2CODEL(m_Interval)))) 
+                             TIME2CODEL(m_Interval)))) 
       {
         Drop(p);
         ++m_drop_count;
+
+        NS_LOG_LOGIC ("Popped " << p);
+        NS_LOG_LOGIC ("Number packets " << m_packets.size ());
+        NS_LOG_LOGIC ("Number bytes " << m_bytesInQueue);
+
         drop = ShouldDrop(p, now);
         m_dropping = true;
         ++m_state3;
@@ -422,20 +417,40 @@ CoDelQueue::DoDequeue (void)
          * assume that the drop rate that controlled the queue on the
          * last cycle is a good starting point to control it now.
          */
-        if (codel_time_after(now - m_drop_next, 16 * TIME2CODEL(m_Interval))) 
+        if (codel_time_after(now - m_drop_next, TIME2CODEL(m_Interval))) 
           {
-            //uint32_t c = min(m_count - 1, m_count - (m_count >> 4));
-            uint32_t c = m_count - 1;
-            m_count = std::max(1U, c);
+            //uint32_t c = m_count - 2;
+            //m_count = std::max(1U, c);
+            m_count = m_count>2U? (uint32_t)m_count-2U:1U;
+            NewtonStep();
           } 
         else
           {
             m_count = 1;
+            m_rec_inv_sqrt = ~0U >> REC_INV_SQRT_SHIFT;
           }
         m_drop_next = ControlLaw(now);
       }
   ++m_states;
   return p;
+}
+
+uint32_t
+CoDelQueue::GetQueueSize (void)
+{
+  NS_LOG_FUNCTION_NOARGS ();
+  if (GetMode () == BYTES)
+    {
+      return m_bytesInQueue;
+    }
+  else if (GetMode () == PACKETS)
+    {
+      return m_packets.size ();
+    }
+  else
+    {
+      NS_ABORT_MSG ("Unknown mode.");
+    }
 }
 
 Ptr<const Packet>
