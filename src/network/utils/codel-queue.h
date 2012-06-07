@@ -55,6 +55,8 @@ class TraceContainer;
  */
 class CoDelQueue : public Queue {
 public:
+  friend class Fq_CoDelQueue;
+
   static TypeId GetTypeId (void);
   /**
    * \brief CoDelQueue Constructor
@@ -103,7 +105,8 @@ private:
   std::queue<Ptr<Packet> > m_packets;
   uint32_t m_maxPackets;
   uint32_t m_maxBytes;
-  TracedValue<uint32_t> m_bytesInQueue;
+  uint32_t m_bytesInQueue;
+  uint32_t *backlog;
   uint32_t m_minbytes;
   Time m_Interval;
   Time m_Target;

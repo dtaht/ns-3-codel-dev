@@ -184,6 +184,7 @@ def build(bld):
         'helper/ipv6-routing-helper.cc',
         'model/ipv6-address-generator.cc',
         'model/sfq-queue.cc',
+        'model/fq_codel-queue.cc',
         ]
 
     internet_test = bld.create_ns3_module_test_library('internet')
@@ -280,6 +281,8 @@ def build(bld):
         'helper/ipv6-interface-container.h',
         'helper/ipv6-routing-helper.h',
         'model/ipv6-address-generator.h',
+        'model/sfq-queue.h',
+        'model/fq_codel-queue.h',
        ]
 
     if bld.env['NSC_ENABLED']:

@@ -54,11 +54,23 @@
 #include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
 #include "ns3/ipv4-global-routing-helper.h"
+#include "ns3/traced-value.h"
+#include "ns3/trace-source-accessor.h"
 
 using namespace ns3;
 using namespace boost;
 
 NS_LOG_COMPONENT_DEFINE ("TcpServer");
+
+// void bytesInQueueTrace(uint32_t v_old, uint32_t v_new)
+// {
+//   NS_LOG_INFO ((format("Queue went from %d to %d (%d)") % (v_old) % (v_new) % (((int) v_new)-((int) v_old))).str());
+// }
+
+// void countTrace(uint32_t v_old, uint32_t v_new)
+// {
+//   NS_LOG_INFO ((format("Count went from %d to %d (%d)") % (v_old) % (v_new) % (((int) v_new)-((int) v_old))).str());
+// }
 
 int 
 main (int argc, char *argv[])
@@ -67,40 +79,43 @@ main (int argc, char *argv[])
   // for selected modules; the below lines suggest how to do this
 
   LogComponentEnable ("TcpServer", LOG_LEVEL_INFO);
-  LogComponentEnable ("PointToPointNetDevice", LOG_LEVEL_INFO);
+  //LogComponentEnable ("PointToPointNetDevice", LOG_LEVEL_INFO);
   //LogComponentEnable ("TcpL4Protocol", LOG_LEVEL_ALL);
-  //LogComponentEnable ("PacketSink", LOG_LEVEL_ALL);
-  //LogComponentEnable ("SfqQueue", LOG_LEVEL_ALL);
+  //LogComponentEnable ("Config", LOG_LEVEL_ALL);
+  //LogComponentEnable ("SfqQueue", LOG_LEVEL_INFO);
+  //LogComponentEnable ("RedQueue", LOG_LEVEL_INFO);
+  LogComponentEnable ("CoDelQueue", LOG_LEVEL_INFO);
+  LogComponentEnable ("Fq_CoDelQueue", LOG_LEVEL_INFO);
 
   // turn on checksums
   GlobalValue::Bind ("ChecksumEnabled", BooleanValue (true));
 
   uint32_t N = 15; //number of nodes
-  uint32_t M = 10; //number of low latency nodes
+  uint32_t M = 9; //number of low latency nodes
   std::string appDataRate = "10Mbps";
-  std::string bottleneckRate = "100Mbps";
+  std::string bottleneckRate = "90Mbps";
   std::string CoDelInterval = "100ms";
   std::string CoDelTarget = "5ms";
   std::string R1 = "10Mbps";
-  std::string R2 = "40Mbps";
-  std::string Q1queueType = "DropTail";
-  std::string Q2queueType = "DropTail";
-  double      Q1minTh = 50;
-  double      Q1maxTh = 80;
+  std::string R2 = "25Mbps";
+  std::string Q1queueType = "RED";
+  std::string Q2queueType = "RED";
+  double      Q1minTh = 40;
+  double      Q1maxTh = 100;
   uint32_t    Q1maxPackets = 100;
-  double      Q2minTh = 50;
-  double      Q2maxTh = 80;
+  double      Q2minTh = 40;
+  double      Q2maxTh = 100;
   uint32_t    Q2maxPackets = 100;
-  double      minTh = 50;
-  double      maxTh = 80;
+  double      minTh = 60;
+  double      maxTh = 120;
   uint32_t    modeBytes  = 0;
   uint32_t    stack  = 0;
   uint32_t    modeGentle  = 0;
-  uint32_t    maxPackets = 100;
+  uint32_t    maxPackets = 200;
   uint32_t    pktSize = 1400;
   uint32_t    sfqheadmode = 0;
   uint32_t maxBytes = 0;
-  std::string queueType = "DropTail";
+  std::string queueType = "SFQ";
 
   double AppStartTime   = 0.1001;
 
@@ -140,15 +155,15 @@ main (int argc, char *argv[])
   cmd.AddValue ("Target", "CoDel algorithm target queue delay", CoDelTarget);
   cmd.Parse (argc, argv);
 
-  if ((queueType != "RED") && (queueType != "DropTail") && (queueType != "SFQ") && (queueType != "CoDel"))
+  if ((queueType != "RED") && (queueType != "DropTail") && (queueType != "SFQ") && (queueType != "CoDel") && (queueType != "fq_codel"))
     {
       NS_ABORT_MSG ("Invalid queue type: Use --queueType=RED or --queueType=DropTail");
     }
-  if ((Q1queueType != "RED") && (Q1queueType != "DropTail"))
+  if ((Q1queueType != "RED") && (Q1queueType != "DropTail") && (Q1queueType != "CoDel"))
     {
       NS_ABORT_MSG ("Invalid Q1 queue type: Use --queueType=RED or --queueType=DropTail");
     }
-  if ((Q2queueType != "RED") && (Q2queueType != "DropTail"))
+  if ((Q2queueType != "RED") && (Q2queueType != "DropTail") && (Q2queueType != "CoDel"))
     {
       NS_ABORT_MSG ("Invalid Q2 queue type: Use --queueType=RED or --queueType=DropTail");
     }
@@ -193,6 +208,9 @@ main (int argc, char *argv[])
   Config::SetDefault ("ns3::RedQueue::MaxTh", DoubleValue (maxTh));
   Config::SetDefault ("ns3::RedQueue::LinkBandwidth", StringValue (bottleneckRate));
   Config::SetDefault ("ns3::RedQueue::LinkDelay", StringValue ("1ms"));
+
+  Config::SetDefault ("ns3::CoDelQueue::Interval", StringValue(CoDelInterval));
+  Config::SetDefault ("ns3::CoDelQueue::Target", StringValue(CoDelTarget));
 
   Config::SetDefault ("ns3::OnOffApplication::PacketSize", UintegerValue (pktSize));
   Config::SetDefault ("ns3::TcpSocket::SegmentSize", UintegerValue (pktSize));
@@ -263,6 +281,14 @@ main (int argc, char *argv[])
                           "LinkBandwidth", StringValue (R1),
                           "QueueLimit",  UintegerValue (Q1maxPackets));
     }
+  else if (Q1queueType == "CoDel")
+    {
+      p1channel.SetQueue ("ns3::CoDelQueue",
+                          "Interval", StringValue("100ms"),
+                          "Target", StringValue("5ms"),
+                          "MinBytes", UintegerValue(1500)
+                          );
+    }
   PointToPointHelper p2channel;
   p2channel.SetDeviceAttribute ("DataRate", StringValue (R2));
   if (Q2queueType == "RED")
@@ -272,7 +298,15 @@ main (int argc, char *argv[])
                           "MaxTh", DoubleValue (Q2maxTh),
                           "LinkBandwidth", StringValue (R2),
                           "QueueLimit",  UintegerValue (Q2maxPackets));
-    }  
+    }
+  else if (Q2queueType == "CoDel")
+    {
+      p2channel.SetQueue ("ns3::CoDelQueue",
+                          "Interval", StringValue("100ms"),
+                          "Target", StringValue("5ms"),
+                          "MinBytes", UintegerValue(1500)
+                          );
+    }
   PointToPointHelper serverchannel;
   // server links are fast
   serverchannel.SetDeviceAttribute ("DataRate", StringValue (bottleneckRate));
@@ -292,6 +326,10 @@ main (int argc, char *argv[])
   else if (queueType == "SFQ")
     {
       bottleneckchannel.SetQueue ("ns3::SfqQueue");
+    } 
+  else if (queueType == "fq_codel")
+    {
+      bottleneckchannel.SetQueue ("ns3::Fq_CoDelQueue");
     } 
   else if (queueType == "CoDel")
     {
@@ -394,12 +432,17 @@ main (int argc, char *argv[])
   sinkApps.Start (Seconds (0.01));
   sinkApps.Stop (Seconds (15.0));
 
+  PointToPointHelper pointToPoint;
 
   //configure tracing
-  //AsciiTraceHelper ascii;
-  //p2p.EnableAsciiAll (ascii.CreateFileStream ("tcp-qfp.tr"));
-  PointToPointHelper pointToPoint;
+  AsciiTraceHelper ascii;
+  pointToPoint.EnableAsciiAll (ascii.CreateFileStream ("tcp-qfp.tr"));
   pointToPoint.EnablePcapAll ("tcp-qfp");
+
+  // Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/$ns3::CoDelQueue/count",
+  //                                MakeCallback(&countTrace));
+  // Config::ConnectWithoutContext ("/NodeList/*/DeviceList/*/$ns3::PointToPointNetDevice/TxQueue/$ns3::CoDelQueue/bytesInQueue",
+  //                                MakeCallback(&bytesInQueueTrace));
 
   NS_LOG_INFO ("Run Simulation.");
   Simulator::Stop (Seconds (30.0));

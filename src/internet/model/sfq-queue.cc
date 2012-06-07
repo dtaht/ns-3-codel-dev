@@ -27,11 +27,30 @@
 #include <boost/functional/hash.hpp>
 #include <boost/format.hpp>
 
+/*
+ * SFQ as implemented by Linux, not the classical version.
+ */
+
 NS_LOG_COMPONENT_DEFINE ("SfqQueue");
 
 using namespace boost;
 
 namespace ns3 {
+
+SfqSlot::SfqSlot () :
+  allot(0),
+  backlog(0),
+  h(0),
+  active(false)
+{
+  this->q = CreateObject<RedQueue> ();
+  NS_LOG_FUNCTION_NOARGS ();
+}
+
+SfqSlot::~SfqSlot ()
+{
+  NS_LOG_FUNCTION_NOARGS ();
+}
 
 NS_OBJECT_ENSURE_REGISTERED (SfqQueue);
 
@@ -50,13 +69,18 @@ TypeId SfqQueue::GetTypeId (void)
                    UintegerValue (500),
                    MakeUintegerAccessor (&SfqQueue::m_peturbInterval),
                    MakeUintegerChecker<uint32_t> ())
+    .AddAttribute ("Quantum",
+                   "Quantum in bytes",
+                   UintegerValue (4500),
+                   MakeUintegerAccessor (&SfqQueue::m_quantum),
+                   MakeUintegerChecker<uint32_t> ())
     ;
   return tid;
 }
 
 SfqQueue::SfqQueue () :
   m_ht (),
-  nextbucket (0),
+  m_flows(),
   psource (),
   peturbation (psource.GetInteger(0,std::numeric_limits<std::size_t>::max()))
 {
@@ -97,82 +121,47 @@ SfqQueue::hash(Ptr<Packet> p)
     }
 }
 
-Ptr<RedQueue>
-SfqQueue::getQ(Ptr<Packet> p) 
-{
-  NS_LOG_FUNCTION (this << p);
-
-  std::size_t h = SfqQueue::hash(p);
-  if (m_ht[h] == NULL)
-    {
-      NS_LOG_DEBUG ("Create queue " << h);
-      m_ht[h] = CreateObject<RedQueue> ();
-      if (m_headmode)
-        nextbucket=h;
-    }
-  return m_ht[h];
-}
-
-// return the next non-empty queue
-Ptr<RedQueue>
-SfqQueue::getQ() const
-{
-  NS_LOG_FUNCTION_NOARGS ();
-  //  mutable std::map<int, Ptr<RedQueue> > m_ht;
-  std::pair< std::map<int, Ptr<RedQueue> >::iterator, 
-             std::map<int, Ptr<RedQueue> >::iterator 
-             > ret;
-
-  Ptr<RedQueue> q = NULL;
-  std::map<int, Ptr<RedQueue> >::iterator m_ht_it;
-
-  NS_LOG_DEBUG ("Bucket search " << nextbucket);
-
-  ret = m_ht.equal_range(nextbucket);
-  if (ret.first == m_ht.end())
-    {
-      if (m_ht.begin() != m_ht.end()) 
-        {
-          NS_LOG_DEBUG ("Bucket wrap");
-          // nextbucket is greater than the last one in use
-          // get the first one
-          ret = m_ht.equal_range(0);
-        }
-      else
-        {
-          NS_LOG_DEBUG ("No buckets");
-          return NULL;
-        }
-    }
-  q = ret.first->second;
-  // q now points to a queue, so...
-  while ((q->GetQueueSize() == 0) && (ret.first != m_ht.end()))
-    {
-      nextbucket = ret.first->first;
-      NS_LOG_DEBUG ("Bucket looking in " << nextbucket);
-      q = ret.first->second;
-      ++ret.first;
-    }
-  NS_LOG_DEBUG ("Bucket found in " << nextbucket);
-  ++nextbucket;
-  if (q->GetQueueSize() == 0)
-    {
-      m_ht.erase(ret.first->first);
-      return NULL;
-    }
-  else
-    return q;
-}
-
-
 bool 
 SfqQueue::DoEnqueue (Ptr<Packet> p)
 {
   NS_LOG_FUNCTION (this << p);
+  bool queued;
 
-  Ptr<RedQueue> q = getQ(p);
+  Ptr<SfqSlot> slot;
 
-  return q->Enqueue(p);
+  std::size_t h = SfqQueue::hash(p);
+  if (m_ht[h] == NULL)
+    {
+      NS_LOG_DEBUG ("SFQ enqueue Create queue " << h);
+      m_ht[h] = slot = Create<SfqSlot> ();
+      slot->h = h;
+      slot->backlog = 0;
+      slot->allot = m_quantum;
+    } 
+  else 
+    {
+      NS_LOG_DEBUG ("SFQ enqueue use queue "<<h);
+      slot = m_ht[h];
+    }
+
+  if (!slot->active) 
+    {
+      NS_LOG_DEBUG ("SFQ enqueue inactive queue "<<h);
+      if (m_headmode) {
+        m_flows.push_front(slot);
+      } else {
+        m_flows.push_back(slot);
+      }
+    }
+  slot->active = true;
+
+  uint32_t sz = p->GetSize();
+
+  if ((queued = slot->q->Enqueue(p))) {
+    slot->backlog += sz;
+  }
+
+  return queued;
 }
 
 Ptr<Packet>
@@ -180,17 +169,47 @@ SfqQueue::DoDequeue (void)
 {
   NS_LOG_FUNCTION (this);
 
-  Ptr<RedQueue> q = getQ();
+  if (m_flows.empty()) {
+    return 0;
+  }
 
-  if (q != NULL)
+  Ptr<SfqSlot> slot;
+
+ next_slot:
+  slot = m_flows.front();
+  NS_LOG_DEBUG ("SFQ scan "<<slot->h);
+
+  m_flows.pop_front();
+
+  if (slot->allot <= 0) {
+    slot->allot += m_quantum;
+    m_flows.push_back(slot);
+    goto next_slot;
+  }
+
+  if (slot->q->Peek() != 0)
     {
-      ++pcounter;
-      Ptr<Packet> p = q->Dequeue();
+      NS_LOG_DEBUG ("SFQ found a packet "<<slot->h);
+      Ptr<Packet> p = slot->q->Dequeue();
+      
+      slot->backlog -= p->GetSize();
+      slot->allot -= p->GetSize();
+      
+      if (slot->q->Peek() != 0)
+        {
+          m_flows.push_back(slot);
+        }
+      else
+        {
+          slot->active = false;
+        }
       return p;
-    }
-  else
+    } 
+  else 
     {
-      return NULL;
+      NS_LOG_DEBUG ("SFQ found empty queue "<<slot->h);
+      slot->active = false;
+      return 0;
     }
 }
 
@@ -199,15 +218,13 @@ SfqQueue::DoPeek (void) const
 {
   NS_LOG_FUNCTION (this);
 
-  Ptr<RedQueue> q = getQ();
-
-  if (q != NULL)
+  if (!m_flows.empty())
     {
-      return q->Peek();
+      return m_flows.front()->q->Peek();
     }
   else
     {
-      return NULL;
+      return 0;
     }
 }
 

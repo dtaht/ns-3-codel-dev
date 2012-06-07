@@ -188,9 +188,9 @@ TypeId CoDelQueue::GetTypeId (void)
     .AddTraceSource("drop_count",
                     "CoDel drop count",
                     MakeTraceSourceAccessor(&CoDelQueue::m_drop_count))
-    .AddTraceSource("bytesInQueue",
-                    "Number of bytes in the queue",
-                    MakeTraceSourceAccessor(&CoDelQueue::m_bytesInQueue))
+    // .AddTraceSource("bytesInQueue",
+    //                 "Number of bytes in the queue",
+    //                 MakeTraceSourceAccessor(&CoDelQueue::m_bytesInQueue))
   ;
 
   return tid;
@@ -201,6 +201,7 @@ CoDelQueue::CoDelQueue () :
   m_packets (),
   m_maxBytes(),
   m_bytesInQueue(0),
+  backlog(&m_bytesInQueue),
   m_count(0),
   m_drop_count(0),
   m_dropping(false),
@@ -289,15 +290,14 @@ bool
 CoDelQueue::ShouldDrop(Ptr<Packet> p, codel_time_t now)
 {
   CoDelTimestampTag tag;
-  bool found;
   bool drop;
-  found = p->FindFirstMatchingByteTag (tag);
+  p->FindFirstMatchingByteTag (tag);
   Time delta = Simulator::Now () - tag.GetTxTime ();
   NS_LOG_INFO ("Sojourn time "<<delta.GetSeconds ());
   codel_time_t sojourn_time = TIME2CODEL(delta);
   
   if (codel_time_before(sojourn_time, TIME2CODEL(m_Target)) || 
-      m_bytesInQueue < m_minbytes)
+      *backlog < m_minbytes)
     {
       /* went below so we'll stay below for at least q->interval */
       m_first_above_time = 0;
@@ -317,6 +317,8 @@ CoDelQueue::ShouldDrop(Ptr<Packet> p, codel_time_t now)
         drop = true;
         ++m_state1;
       }
+  if (!drop)
+    Drop (p);
   return drop;
 }
 
@@ -394,7 +396,7 @@ CoDelQueue::DoDequeue (void)
                 }
             }
           }
-    } 
+    }
   else 
     if (drop &&
         (codel_time_before(now - m_drop_next,
@@ -402,7 +404,6 @@ CoDelQueue::DoDequeue (void)
          codel_time_after_eq(now - m_first_above_time,
                              TIME2CODEL(m_Interval)))) 
       {
-        Drop(p);
         ++m_drop_count;
 
         NS_LOG_LOGIC ("Popped " << p);
@@ -430,6 +431,8 @@ CoDelQueue::DoDequeue (void)
             m_rec_inv_sqrt = ~0U >> REC_INV_SQRT_SHIFT;
           }
         m_drop_next = ControlLaw(now);
+        Drop(p);
+        p = NULL;
       }
   ++m_states;
   return p;

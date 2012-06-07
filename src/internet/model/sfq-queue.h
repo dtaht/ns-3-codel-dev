@@ -29,6 +29,20 @@ namespace ns3 {
 
 class TraceContainer;
 
+class SfqSlot : public SimpleRefCount<SfqSlot> {
+public:
+  // static TypeId GetTypeId (void);
+  SfqSlot ();
+
+  virtual ~SfqSlot();
+
+  Ptr<RedQueue> q;
+  int allot;
+  unsigned int backlog;
+  int h;
+  bool active;
+};
+
 /**
  * \ingroup queue
  */
@@ -48,18 +62,17 @@ private:
   virtual Ptr<const Packet> DoPeek (void) const;
 
   std::size_t hash(Ptr<Packet> p);
-  Ptr<RedQueue> getQ(Ptr<Packet>);
-  Ptr<RedQueue> getQ() const;
   // only mutable so we can get a reference out of here in Peek()
-  mutable std::map<int, Ptr<RedQueue> > m_ht;
+  mutable std::map<int, Ptr<SfqSlot> > m_ht;
+  mutable std::list<Ptr<SfqSlot> > m_flows;
   uint32_t m_divisor;
   uint32_t m_buckets;
   uint32_t m_peturbInterval;
   bool m_headmode;
-  mutable size_t nextbucket;
   mutable size_t pcounter;
   UniformVariable psource;
   mutable uint32_t peturbation;
+  uint32_t m_quantum;
 };
 
 } // namespace ns3
