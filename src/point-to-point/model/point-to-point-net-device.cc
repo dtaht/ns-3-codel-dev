@@ -500,6 +500,12 @@ PointToPointNetDevice::Send (
       if (m_queue->Enqueue (packet) == true)
         {
           packet = m_queue->Dequeue ();
+          if (packet == NULL)
+            {
+              // Dequeue may fail (head drop)
+              // can't trace this either
+              return false;
+            }
           m_snifferTrace (packet);
           m_promiscSnifferTrace (packet);
           return TransmitStart (packet);

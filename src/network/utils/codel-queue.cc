@@ -431,7 +431,6 @@ CoDelQueue::DoDequeue (void)
             m_rec_inv_sqrt = ~0U >> REC_INV_SQRT_SHIFT;
           }
         m_drop_next = ControlLaw(now);
-        Drop(p);
         p = NULL;
       }
   ++m_states;

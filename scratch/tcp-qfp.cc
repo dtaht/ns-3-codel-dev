@@ -84,8 +84,9 @@ main (int argc, char *argv[])
   //LogComponentEnable ("Config", LOG_LEVEL_ALL);
   //LogComponentEnable ("SfqQueue", LOG_LEVEL_INFO);
   //LogComponentEnable ("RedQueue", LOG_LEVEL_INFO);
-  LogComponentEnable ("CoDelQueue", LOG_LEVEL_INFO);
-  LogComponentEnable ("Fq_CoDelQueue", LOG_LEVEL_INFO);
+  //LogComponentEnable ("Ipv4Interface", LOG_LEVEL_LOGIC);
+  //LogComponentEnable ("CoDelQueue", LOG_LEVEL_ALL);
+  //LogComponentEnable ("Fq_CoDelQueue", LOG_LEVEL_ALL);
 
   // turn on checksums
   GlobalValue::Bind ("ChecksumEnabled", BooleanValue (true));
