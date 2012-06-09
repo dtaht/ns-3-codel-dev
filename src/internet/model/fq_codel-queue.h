@@ -19,19 +19,19 @@
 #ifndef FQ_CODEL_H
 #define FQ_CODEL_H
 
-#include <queue>
+#include <map>
 #include "ns3/random-variable.h"
+#include "ns3/linux-list.h"
 #include "ns3/boolean.h"
 #include "ns3/packet.h"
 #include "ns3/queue.h"
-#include <map>
 #include "ns3/codel-queue.h"
 
 namespace ns3 {
 
 class TraceContainer;
 
-class Fq_CoDelSlot : public SimpleRefCount<Fq_CoDelSlot> {
+class Fq_CoDelSlot {
 public:
   friend class CoDelQueue;
 
@@ -40,11 +40,12 @@ public:
 
   virtual ~Fq_CoDelSlot();
 
+  struct list_head flowchain;
+
   Ptr<CoDelQueue> q;
   int deficit;
   uint32_t backlog;
   int h;
-  bool active;
 };
 
 /**
@@ -67,9 +68,9 @@ private:
 
   std::size_t hash(Ptr<Packet> p);
   // only mutable so we can get a reference out of here in Peek()
-  mutable std::map<int, Ptr<Fq_CoDelSlot> > m_ht;
-  mutable std::list<Ptr<Fq_CoDelSlot> > m_new_flows;
-  mutable std::list<Ptr<Fq_CoDelSlot> > m_old_flows;
+  mutable std::map<int, Fq_CoDelSlot * > m_ht;
+  mutable struct list_head m_new_flows;
+  mutable struct list_head m_old_flows;
   uint32_t m_divisor;
   uint32_t m_buckets;
   uint32_t m_peturbInterval;

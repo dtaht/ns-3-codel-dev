@@ -240,6 +240,7 @@ def build(bld):
         'model/fatal-impl.h',
         'model/system-path.h',
         'model/unused.h',
+        'model/linux-list.h',
         ]
 
     if sys.platform == 'win32':

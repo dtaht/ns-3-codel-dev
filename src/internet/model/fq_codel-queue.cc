@@ -40,8 +40,9 @@ namespace ns3 {
 Fq_CoDelSlot::Fq_CoDelSlot () :
   h(0)
 {
-  this->q = CreateObject<CoDelQueue> ();
   NS_LOG_FUNCTION_NOARGS ();
+  INIT_LIST_HEAD(&flowchain);
+  this->q = CreateObject<CoDelQueue> ();
 }
 
 Fq_CoDelSlot::~Fq_CoDelSlot ()
@@ -68,7 +69,7 @@ TypeId Fq_CoDelQueue::GetTypeId (void)
                    MakeUintegerChecker<uint32_t> ())
     .AddAttribute ("Quantum",
                    "Quantum in bytes",
-                   UintegerValue (9000),
+                   UintegerValue (4507),
                    MakeUintegerAccessor (&Fq_CoDelQueue::m_quantum),
                    MakeUintegerChecker<uint32_t> ())
     ;
@@ -77,12 +78,12 @@ TypeId Fq_CoDelQueue::GetTypeId (void)
 
 Fq_CoDelQueue::Fq_CoDelQueue () :
   m_ht (),
-  m_new_flows(),
-  m_old_flows(),
   psource (),
   peturbation (psource.GetInteger(0,std::numeric_limits<std::size_t>::max()))
 {
   NS_LOG_FUNCTION_NOARGS ();
+  INIT_LIST_HEAD(&m_new_flows);
+  INIT_LIST_HEAD(&m_old_flows);
 }
 
 Fq_CoDelQueue::~Fq_CoDelQueue ()
@@ -106,9 +107,10 @@ Fq_CoDelQueue::hash(Ptr<Packet> p)
     {
       if (pcounter > m_peturbInterval)
         peturbation = psource.GetInteger(0,std::numeric_limits<std::size_t>::max());
-      std::size_t h = (string_hash((format("%x%x%d")
+      std::size_t h = (string_hash((format("%x%x%x%x")
                                     % (ip_hd.GetDestination().Get())
                                     % (ip_hd.GetSource().Get())
+                                    % (ip_hd.GetProtocol())
                                     % (peturbation)).str())
                        & 0x2ff);
       return h;
@@ -125,27 +127,21 @@ Fq_CoDelQueue::DoEnqueue (Ptr<Packet> p)
   NS_LOG_FUNCTION (this << p);
   bool queued;
 
-  Ptr<Fq_CoDelSlot> slot;
+  Fq_CoDelSlot *slot;
 
   std::size_t h = Fq_CoDelQueue::hash(p);
   NS_LOG_DEBUG ("fq_codel enqueue use queue "<<h);
   if (m_ht[h] == NULL)
     {
       NS_LOG_DEBUG ("fq_codel enqueue Create queue " << h);
-      m_ht[h] = slot = Create<Fq_CoDelSlot> ();
+      m_ht[h] = new Fq_CoDelSlot ();
+      slot = m_ht[h];
       slot->q->backlog = &backlog;
       slot->h = h;
     } 
   else 
     {
       slot = m_ht[h];
-    }
-
-  if (!slot->active) 
-    {
-      NS_LOG_DEBUG ("fq_codel enqueue inactive queue "<<h);
-
-      slot->deficit = m_quantum;
     }
 
   queued = slot->q->Enqueue(p);
@@ -155,18 +151,17 @@ Fq_CoDelQueue::DoEnqueue (Ptr<Packet> p)
       slot->backlog += p->GetSize();
       backlog += p->GetSize();
 
-      if (m_headmode && !slot->active) {
-        m_new_flows.push_front(slot);
-      } else {
-        m_new_flows.push_back(slot);
+      if (list_empty(&slot->flowchain)) {
+        NS_LOG_DEBUG ("fq_codel enqueue inactive queue "<<h);
+        list_add_tail(&slot->flowchain, &m_new_flows);
+        slot->deficit = m_quantum;
       }
-      slot->active = true;
     }
   else
     {
       Drop (p);
     }
-  NS_LOG_DEBUG ("fq_codel enqueue "<<slot->h<<" "<<m_new_flows.size()<<" "<<m_old_flows.size()<<" "<<queued);
+  NS_LOG_DEBUG ("fq_codel enqueue "<<slot->h<<" "<<queued);
   return queued;
 }
 
@@ -174,64 +169,46 @@ Ptr<Packet>
 Fq_CoDelQueue::DoDequeue (void)
 {
   NS_LOG_FUNCTION (this);
+  Fq_CoDelSlot *flow;
+  struct list_head *head;
 
-  Ptr<Fq_CoDelSlot> slot;
+begin:
+  head = &m_new_flows;
+  if (list_empty(head)) {
+    head = &m_old_flows;
+    if (list_empty(head))
+      return NULL;
+  }
+  flow = list_first_entry(head, Fq_CoDelSlot, flowchain);
 
- next_slot:
-  if (m_new_flows.empty()) 
+  NS_LOG_DEBUG ("fq_codel scan "<<flow->h);
+
+  if (flow->deficit <= 0) 
     {
-      if (m_old_flows.empty()) 
-        {
-          NS_LOG_DEBUG ("fq_codel dequeue found no flows");
-          return 0;
-        }
+      flow->deficit += m_quantum;
+      NS_LOG_DEBUG ("fq_codel deficit now "<<flow->deficit<<" "<<flow->h);
+      list_move_tail(&flow->flowchain, &m_old_flows);
+      goto begin;
+    }
+
+  Ptr<Packet> p = flow->q->Dequeue();
+  if (p == NULL)
+    {
+      /* force a pass through old_flows to prevent starvation */
+      if ((head == &m_new_flows) && !list_empty(&m_old_flows))
+        list_move_tail(&flow->flowchain, &m_old_flows);
       else
-        {
-          NS_LOG_DEBUG ("fq_codel run old flows");
-          m_new_flows.splice(m_new_flows.end(), m_old_flows);
-          goto next_slot;
-        }
-    }
-  slot = m_new_flows.front();
-  NS_LOG_DEBUG ("fq_codel scan "<<slot->h<<" "<<m_new_flows.size()<<" "<<m_old_flows.size());
-  m_new_flows.pop_front();
-  slot->active = false;
+        list_del_init(&flow->flowchain);
+      goto begin;
 
-  if (slot->deficit <= 0) 
-    {
-      slot->deficit += m_quantum;
-      NS_LOG_DEBUG ("fq_codel deficit now "<<slot->deficit<<" "<<slot->h);
-      m_old_flows.push_back(slot);
-      slot->active = true;
-      goto next_slot;
     }
-
-  if (slot->q->GetQueueSize() == 0)
-    {
-      NS_LOG_DEBUG ("fq_codel slot empty "<<slot->h);
-      goto next_slot;
-    }
-
-  Ptr<Packet> p = slot->q->Dequeue();
-  if (p != NULL)
-    {
-      NS_LOG_DEBUG ("fq_codel found a packet "<<slot->h);
+  NS_LOG_DEBUG ("fq_codel found a packet "<<flow->h);
       
-      slot->deficit -= p->GetSize();
-      slot->backlog -= p->GetSize();
-      backlog -= p->GetSize();
+  flow->deficit -= p->GetSize();
+  flow->backlog -= p->GetSize();
+  backlog -= p->GetSize();
 
-      if (slot->q->GetQueueSize() != 0)
-        {
-          NS_LOG_DEBUG ("fq_codel more packets in flow "<<slot->h);
-          slot->active = true;
-        }
-      return p;
-    } 
-  else 
-    {
-      goto next_slot;
-    }
+  return p; 
 }
 
 Ptr<const Packet>
@@ -239,14 +216,15 @@ Fq_CoDelQueue::DoPeek (void) const
 {
   NS_LOG_FUNCTION (this);
 
-  if (!m_new_flows.empty())
-    {
-      return m_new_flows.front()->q->Peek();
-    }
-  else
-    {
+  struct list_head *head;
+
+  head = &m_new_flows;
+  if (list_empty(head)) {
+    head = &m_old_flows;
+    if (list_empty(head))
       return 0;
-    }
+  }
+  return list_first_entry(head, Fq_CoDelSlot, flowchain)->q->Peek();
 }
 
 } // namespace ns3
